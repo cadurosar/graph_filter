@@ -5,30 +5,44 @@ import tqdm
 import utils
 
 datasets = ["miniImagenet", "CUB", "cifar", "CUB-cross"]
+filters = ["direct", "Simoncelli"]
+
 parser = argparse.ArgumentParser(
     description='Denoising DNN features with class low-pass graph filters test on the few-shot task')
 parser.add_argument('--dataset', choices=datasets,
                     default=datasets[0], help='Choose the novel dataset to test')
 parser.add_argument('--runs', type=int, default=100, help='Number of few-shot iterations')
+parser.add_argument('--filter', choices=filters,
+                    default=filters[0], help='Choose the filter we want to apply')
+parser.add_argument('--F1', default=1, type=int,
+                    help='F1 for the direct filter')
+parser.add_argument('--F2', default=3, type=int,
+                    help='F2 for the direct filter')
+parser.add_argument('--alpha', default=0.35, type=float,
+                    help='alpha parameter for Simoncelli')
 args = parser.parse_args()
+
 
 
 
 
 examples_per_class = 5
 num_classes = 5
-num_queries = 15
+if "CUB" in args.dataset:
+    num_queries = 15
+else:
+    num_queries = 595
 path_file = "data/{}.pkl".format(args.dataset)
 
 with open(path_file, 'rb') as f:
     feature_dict = pickle.load(f)
 
-F1 = 1
-F2 = 3
-
-filter_ = [1 for i in range(F1)] + [0.2 for i in range(F2-F1)
-                                    ] + [0.0 for i in range(examples_per_class-F2)]
-filter_ = torch.cuda.FloatTensor(filter_).view(-1, 1)
+if args.filter == "direct":
+    alpha = [1 for i in range(args.F1)] + [0.2 for i in range(args.F2-args.F1)
+                                        ] + [0.0 for i in range(examples_per_class-args.F2)]
+    alpha = torch.cuda.FloatTensor(alpha).view(-1, 1)
+else:
+    alpha = args.alpha
 
 results_1nn, results_filtered, results_ncm = list(), list(), list()
 utils.random.seed(0) #Fix seed for the random generator - Reproducibility
@@ -38,13 +52,13 @@ for run in tqdm.tqdm(range(args.runs)):
     x_train = torch.cuda.FloatTensor(train_data)
 
     x_test = torch.nn.functional.normalize(torch.cuda.FloatTensor(test_data), dim=1, p=2)
-
+    
     adj = utils.generate_graphs(
         x_train, k=examples_per_class, examples_per_class=examples_per_class, num_classes=num_classes)
     x_train = torch.nn.functional.normalize(x_train, dim=1, p=2)
 
     x_train_filtered, y_train_filtered = utils.generate_filtered_features(
-        x_train, adj, filter_, num_classes=num_classes, examples_per_class=examples_per_class)
+        x_train, adj, args.filter, alpha, num_classes=num_classes, examples_per_class=examples_per_class)
     x_train_filtered = torch.nn.functional.normalize(x_train_filtered, dim=1, p=2)
 
     results_1nn.append(utils.nearest_neighbor_classifier(
@@ -53,6 +67,8 @@ for run in tqdm.tqdm(range(args.runs)):
         x_train_filtered, x_test, y_train_filtered, y_test))
     results_ncm.append(utils.nearest_mean_classifier(torch.nn.functional.normalize(x_train, dim=1, p=2), torch.cuda.LongTensor(
         y_train), torch.nn.functional.normalize(x_test, dim=1, p=2), torch.cuda.LongTensor(y_test)))
+    if run == 0:
+        print("Shape train {}, shape test {}".format(x_train_filtered.shape,x_test.shape))
 
 mean_1nn, confiance_1nn = utils.compute_confidence_interval(results_1nn)
 mean_filtered, confiance_filtered = utils.compute_confidence_interval(results_filtered)

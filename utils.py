@@ -1,12 +1,12 @@
 import random
 import torch
 import numpy as np
-import tqdm
 import scipy
+import pygsp
 import graph_utils
 import graph_construction
 import normalization
-
+import matplotlib.pyplot as plt
 
 def nearest_mean_classifier(train_set, train_labels, test_set, test_labels):
     # Compute the means of the feature vectors of the same classes
@@ -48,7 +48,7 @@ def prepare_data_autoaugment(model):
 
     x_test = list()
     y_test = list()
-    for inputs, targets in tqdm.tqdm(testloader):
+    for inputs, targets in testloader:
         with torch.no_grad():
             y_test.append(targets)
             outputs = torch.FloatTensor(inputs)
@@ -71,7 +71,7 @@ def prepare_data_w10():
 
     x_train = list()
     y_train = list()
-    for inputs, targets in tqdm.tqdm(trainloader):
+    for inputs, targets in trainloader:
         with torch.no_grad():
             y_train.append(targets)
             outputs = torch.FloatTensor(inputs)
@@ -81,7 +81,7 @@ def prepare_data_w10():
 
     x_test = list()
     y_test = list()
-    for inputs, targets in tqdm.tqdm(testloader):
+    for inputs, targets in testloader:
         with torch.no_grad():
             y_test.append(targets)
             outputs = torch.FloatTensor(inputs)
@@ -122,6 +122,23 @@ def generate_graphs(x_train, k=10, sigma=1e-6, examples_per_class=5000, num_clas
     else:
         return adj
 
+def generate_graphs_few_labels(all_, k=10, sigma=1e-6, examples_per_class=5000, num_classes=10):
+    adj = scipy.sparse.lil_matrix((all_.shape[0], all_.shape[0]))
+    local_all = torch.nn.functional.normalize(all_, dim=1, p=2)
+    G = torch.mm(local_all, local_all.T).cpu().numpy()
+    mask = np.zeros_like(G)
+    for a in range(num_classes):
+        mask[a*examples_per_class:(a+1)*examples_per_class][:,a*examples_per_class:(a+1)*examples_per_class] = 1
+    mask[num_classes*examples_per_class:] = 1
+    mask[:,num_classes*examples_per_class:] = 1
+#    G*=mask
+    knn_mask = graph_utils.create_directed_KNN_mask(
+        D=G, knn_param=k, D_type='similarity')
+    knn_adj = graph_construction.knn_graph(G, knn_mask, k, sigma)
+    nnk_adj = graph_construction.nnk_graph(G, knn_mask, k, sigma)
+    return knn_adj, nnk_adj
+
+
 def low_pass_filter_direct(x, adj, filter_):
 
     nodes_to_keep = np.where(adj.sum(axis=1) > 0)[0]
@@ -139,8 +156,41 @@ def low_pass_filter_direct(x, adj, filter_):
     x = torch.matmul(eigenVectors, x)
     return x
 
+def low_pass_filter_Simoncelli(x, adj, alpha):
 
-def generate_filtered_features(x_train, adj, filter_, examples_per_class=5000, num_classes=10):
+    adj = adj.todense()
+    np.fill_diagonal(adj, 0)
+    nodes_to_keep = np.where(adj.sum(axis=1) > 0)[0]
+    real_adj = adj[nodes_to_keep]
+    real_adj = real_adj[:, nodes_to_keep]
+    x = x[nodes_to_keep]
+
+    G = pygsp.graphs.Graph(real_adj, lap_type="normalized")
+    G.estimate_lmax()
+    g = pygsp.filters.Simoncelli(G, 2*alpha/G.lmax)
+
+    x = torch.cuda.FloatTensor(g.filter(x.cpu().numpy()))[:, :, 0]
+    return x
+
+def low_pass_filter_Heat(x, adj, alpha):
+
+    adj = adj.todense()
+    np.fill_diagonal(adj, 0)
+    nodes_to_keep = np.where(adj.sum(axis=1) > 0)[0]
+    real_adj = adj[nodes_to_keep]
+    real_adj = real_adj[:, nodes_to_keep]
+    x = x[nodes_to_keep]
+    print(real_adj)
+
+    G = pygsp.graphs.Graph(real_adj, lap_type="normalized")
+    G.estimate_lmax()
+    g = pygsp.filters.Heat(G, alpha)#2*alpha/G.lmax)
+
+    x = torch.cuda.FloatTensor(g.filter(x.cpu().numpy()))[:, :, 0]
+    return x
+
+
+def generate_filtered_features(x_train, adj, filter_type, alpha, examples_per_class=5000, num_classes=10):
     filtered_x_train = list()
     y_train = list()
     for a in range(num_classes):
@@ -148,12 +198,31 @@ def generate_filtered_features(x_train, adj, filter_, examples_per_class=5000, n
             x_train[a*examples_per_class:(a+1)*examples_per_class], dim=1, p=2)
         W = adj[a*examples_per_class:(a+1)*examples_per_class,
                 a*examples_per_class:(a+1)*examples_per_class]
-        filtered_x = low_pass_filter_direct(local_x_train, W, filter_)
+        if filter_type == "direct":
+            filtered_x = low_pass_filter_direct(local_x_train, W, alpha)
+        elif filter_type == "Simoncelli":
+            filtered_x = low_pass_filter_Simoncelli(local_x_train, W, alpha)
+        elif filter_type == "Heat":
+            filtered_x = low_pass_filter_Heat(local_x_train,W,alpha)
+        else:
+            raise Exception("Filter {} is not implemented".format(filter_type))
         filtered_x_train.append(filtered_x)
         y_train.append(np.zeros(filtered_x.shape[0])+a)
     filtered_x_train = torch.cat(filtered_x_train)
     y_train = np.concatenate(y_train)
     return filtered_x_train, y_train
+
+def generate_filtered_features_few_labels(all_, adj, filter_type, alpha):
+    if filter_type == "direct":
+        filtered_x = low_pass_filter_direct(all_, adj, alpha)
+    elif filter_type == "Simoncelli":
+        filtered_x = low_pass_filter_Simoncelli(all_, adj, alpha)
+    elif filter_type == "Heat":
+        filtered_x = low_pass_filter_Heat(all_,adj,alpha)
+    else:
+        raise Exception("Filter {} is not implemented".format(filter_type))
+    return filtered_x
+
 
 #from https://github.com/yhu01/transfer-sgc
 def sample_case(ld_dict, shot, n_ways, n_queries):
@@ -192,4 +261,4 @@ def compute_confidence_interval(data):
     m = np.mean(a)
     std = np.std(a)
     pm = 1.96 * (std / np.sqrt(len(a)))
-    return np.round(m, 1), np.round(pm, 2)
+    return np.round(m, 2), np.round(pm, 2)

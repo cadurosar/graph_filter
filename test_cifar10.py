@@ -3,32 +3,44 @@ import torch
 import utils
 
 models = ["pyramid", "shake", "w10"]
+filters = ["direct", "Simoncelli"]
+
 parser = argparse.ArgumentParser(
     description='Denoising DNN features with class low-pass graph filters test on the CIFAR-10 dataset')
 parser.add_argument('--model', choices=models,
                     default=models[0], help='Choose the feature generating model')
+parser.add_argument('--filter', choices=filters,
+                    default=filters[0], help='Choose the filter we want to apply')
+parser.add_argument('--F1', default=20, type=int,
+                    help='F1 for the direct filter')
+parser.add_argument('--F2', default=55, type=int,
+                    help='F2 for the direct filter')
+parser.add_argument('--k', default=10, type=int,
+                    help='K parameter for both nnk and knn')
+parser.add_argument('--alpha', default=0.35, type=float,
+                    help='alpha parameter for Simoncelli')
+
 args = parser.parse_args()
 
 
 x_train, y_train, x_test, y_test = utils.prepare_data_cifar10(args.model)
 
-k = 10
 examples_per_class = 5000
 num_classes = 10
 knn_adj, nnk_adj = utils.generate_graphs(
-    x_train, k=k, examples_per_class=examples_per_class, num_classes=num_classes)
+    x_train, k=args.k, examples_per_class=examples_per_class, num_classes=num_classes)
 
-F1 = 20
-F2 = 55
-
-filter_ = [1 for i in range(F1)] + [0.2 for i in range(F2-F1)
-                                    ] + [0.0 for i in range(examples_per_class-F2)]
-filter_ = torch.cuda.FloatTensor(filter_).view(-1, 1)
+if args.filter == "direct":
+    alpha = [1 for i in range(args.F1)] + [0.2 for i in range(args.F2-args.F1)
+                                          ] + [0.0 for i in range(examples_per_class-args.F2)]
+    alpha = torch.cuda.FloatTensor(alpha).view(-1, 1)
+else:
+    alpha = args.alpha
 
 x_train_knn, y_train_knn = utils.generate_filtered_features(
-    x_train, knn_adj, filter_, num_classes=num_classes, examples_per_class=examples_per_class)
+    x_train, knn_adj, args.filter, alpha, num_classes=num_classes, examples_per_class=examples_per_class)
 x_train_nnk, y_train_nnk = utils.generate_filtered_features(
-    x_train, nnk_adj, filter_, num_classes=num_classes, examples_per_class=examples_per_class)
+    x_train, nnk_adj, args.filter, alpha, num_classes=num_classes, examples_per_class=examples_per_class)
 
 result_1nn = utils.nearest_neighbor_classifier(
     x_train, x_test, y_train, y_test)
