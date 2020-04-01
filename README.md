@@ -2,7 +2,7 @@
 
 Code to reproduce the results from the **Denoising DNN features with class low-pass graph filters** paper. 
 
-The files graph_construction.py and graph_utils.py were extracted from the [github of the NNK paper]{https://github.com/STAC-USC/PyNNK_graph_construction} and normalization was extracted from the [github of the SGC paper]{https://github.com/Tiiiger/SGC}. Some functions in util.py were extracted from https://github.com/yhu01/transfer-sgc 
+The files graph_construction.py and graph_utils.py were extracted from the [github of the NNK paper](https://github.com/STAC-USC/PyNNK_graph_construction) and normalization was extracted from the [github of the SGC paper](https://github.com/Tiiiger/SGC). Some functions in util.py were extracted from https://github.com/yhu01/transfer-sgc 
 
 The first step before running any code is to run download_data.sh that will download the features for both tasks and correctly extract the compressed file.
 
